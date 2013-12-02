@@ -8,3 +8,7 @@ from JavaScript.
 ## usage
 
     go run main.go
+
+### see also
+
+* [go rays](https://github.com/kid0m4n/rays/tree/master/gorays)
