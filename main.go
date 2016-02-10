@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 	"image"
-	"image/color"
+	// "image/color"
 	"image/png"
 	"log"
 	"math"
@@ -51,7 +51,7 @@ func main() {
 		spheres,
 		[1]Vec3{Vec3{-30, -10, 20}}}
 
-	render(scene, image.Point{800.0, 600.0})
+	render(scene, image.Point{80.0, 60.0})
 }
 
 func render(scene Scene, size image.Point) {
@@ -74,22 +74,31 @@ func render(scene Scene, size image.Point) {
 	pixelWidth := camerawidth / (width - 1.0)
 	pixelHeight := cameraheight / (height - 1.0)
 
+	errChannel := make(chan error)
+	colorChannel := make(chan Vec3)
 	for x := 0; x < size.X; x++ {
 		for y := 0; y < size.Y; y++ {
 			xComp := scale(vpRight, (float64(x)*pixelWidth)-halfWidth)
 			yComp := scale(vpUp, (float64(y)*pixelHeight)-halfHeight)
 			rayVector := unitVector(add3(eyeVector, xComp, yComp))
-			if x == 0 && y == 0 {
-				log.Printf("%v", xComp)
-			}
 			ray := Ray{scene.camera.point, rayVector}
-			err, c := trace(ray, scene, 0)
-			if err == nil {
-				im.Set(x, y, color.RGBA{
-					uint8(math.Min(c.x, 255)),
-					uint8(math.Min(c.y, 255)),
-					uint8(math.Min(c.z, 255)), 255})
-			}
+			go trace(ray, scene, 0, errChannel, colorChannel)
+		}
+	}
+
+	for x := 0; x < size.X; x++ {
+		for y := 0; y < size.Y; y++ {
+			<-errChannel
+			<-colorChannel
+			// err := <-errChannel
+			// c := <-colorChannel
+			log.Printf("result returned %v %v", x, y)
+			// if err == nil {
+			// 	im.Set(x, y, color.RGBA{
+			// 		uint8(math.Min(c.x, 255)),
+			// 		uint8(math.Min(c.y, 255)),
+			// 		uint8(math.Min(c.z, 255)), 255})
+			// }
 		}
 	}
 
@@ -99,31 +108,25 @@ func render(scene Scene, size image.Point) {
 	png.Encode(toimg, im)
 }
 
-func trace(ray Ray, scene Scene, depth int) (err error, color Vec3) {
-	// if depth > 3 {
-	//     return BounceErrorEror("too many bounces"), Vec3{0, 0, 0}
-	// }
-
+func trace(ray Ray, scene Scene, depth int, err chan error, colorChannel chan Vec3) {
 	distance, object := intersectScene(ray, scene)
 
 	if distance == math.Inf(1) {
-		return errors.New("miss"), Vec3{255, 255, 255}
+		err <- errors.New("miss")
+		colorChannel <- Vec3{255, 255, 255}
+		return
 	}
 
 	pointAtTime := add(ray.point, scale(ray.vector, distance))
 
-	err, col := surface(ray,
+	go surface(ray,
 		scene,
 		object,
 		pointAtTime,
 		sphereNormal(object.point, pointAtTime),
-		depth)
-
-	if err != nil {
-		return err, Vec3{0, 0, 0}
-	}
-
-	return nil, col
+		depth,
+		err,
+		colorChannel)
 }
 
 func intersectScene(ray Ray, scene Scene) (dist float64, obj Sphere) {
@@ -152,10 +155,19 @@ func sphereIntersection(sphere Sphere, ray Ray) float64 {
 	}
 }
 
-func surface(ray Ray, scene Scene, sphere Sphere, pointAtTime Vec3, normal Vec3, depth int) (err error, col Vec3) {
+func surface(ray Ray,
+	scene Scene,
+	sphere Sphere,
+	pointAtTime Vec3,
+	normal Vec3,
+	depth int,
+	err chan error,
+	colorChannel chan Vec3) {
 
 	if depth > 3 {
-		return errors.New("max depth reached"), Vec3{0, 0, 0}
+		err <- errors.New("max depth reached")
+		colorChannel <- Vec3{0, 0, 0}
+		return
 	}
 
 	b := sphere.color
@@ -179,14 +191,24 @@ func surface(ray Ray, scene Scene, sphere Sphere, pointAtTime Vec3, normal Vec3,
 
 	if sphere.specular > 0 {
 		reflectedRay := Ray{pointAtTime, reflectThrough(ray.vector, normal)}
-		err, reflectedColor := trace(reflectedRay, scene, depth+1)
-		if err == nil {
+		subErr := make(chan error)
+		subColor := make(chan Vec3)
+		go trace(reflectedRay, scene, depth+1, subErr, subColor)
+		subErrResult := <-subErr
+		reflectedColor := <-subColor
+		if subErrResult == nil {
 			c = add(c, scale(reflectedColor, sphere.specular))
+		} else {
+			// color <- Vec3{0, 0, 0}
+			// err <- subErrResult
+			return
 		}
 	}
 
-	return nil, add3(c, scale(b, lambertAmount*sphere.lambert),
+	log.Println("in surface")
+	colorChannel <- add3(c, scale(b, lambertAmount*sphere.lambert),
 		scale(b, sphere.ambient))
+	err <- nil
 }
 
 func isLightVisible(pt Vec3, scene Scene, light Vec3) bool {
